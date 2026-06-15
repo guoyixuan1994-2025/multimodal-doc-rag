@@ -39,8 +39,11 @@ class RagService:
         rewritten_query = safe_rewrite_query(question, self.active_documents)
         rewritten_query = self._expand_query_from_corpus(question, rewritten_query)
         scoped_chunks, requested_documents = self._scope_chunks(f"{question} {rewritten_query}")
-        direct_image_caption = self._is_image_overview_question(question)
-        if direct_image_caption:
+        direct_image_caption = self._is_image_overview_question(question, scoped_chunks)
+        document_overview = bool(requested_documents) and self._is_document_overview_question(question)
+        if document_overview:
+            rerank_hits = self._document_overview_hits(scoped_chunks)
+        elif direct_image_caption:
             # 用户明确问当前图片整体内容时，VLM caption 本身就是一手证据。
             # 通用文本 reranker 不擅长判定这类 caption 是否相关，因此不让低分误触发拒答。
             candidates = [
@@ -54,8 +57,13 @@ class RagService:
         else:
             hybrid_hits = self.retriever.retrieve(rewritten_query)
             candidates = [(hit.chunk, hit.score) for hit in hybrid_hits]
-        rerank_hits = self.reranker.rerank(rewritten_query, candidates, top_n=self._adaptive_top_n(question, rewritten_query))
-        rerank_hits = self._ensure_exact_evidence_coverage(question, rewritten_query, rerank_hits, scoped_chunks)
+        if not document_overview:
+            rerank_hits = self.reranker.rerank(
+                rewritten_query,
+                candidates,
+                top_n=self._adaptive_top_n(question, rewritten_query),
+            )
+            rerank_hits = self._ensure_exact_evidence_coverage(question, rewritten_query, rerank_hits, scoped_chunks)
 
         if direct_image_caption and self._has_uninformative_image_caption(rerank_hits):
             return ChatResponse(
@@ -72,6 +80,7 @@ class RagService:
 
         if (
             not direct_image_caption
+            and not document_overview
             and (
                 (
                     should_refuse(rerank_hits)
@@ -119,8 +128,12 @@ class RagService:
         yield self._sse("status", {"request_id": request_id, "stage": "query_rewrite", "rewritten_query": rewritten_query})
 
         scoped_chunks, requested_documents = self._scope_chunks(f"{question} {rewritten_query}")
-        direct_image_caption = self._is_image_overview_question(question)
-        if direct_image_caption:
+        direct_image_caption = self._is_image_overview_question(question, scoped_chunks)
+        document_overview = bool(requested_documents) and self._is_document_overview_question(question)
+        if document_overview:
+            rerank_hits = self._document_overview_hits(scoped_chunks)
+            candidates = [(hit.chunk, hit.hybrid_score) for hit in rerank_hits]
+        elif direct_image_caption:
             candidates = [
                 (chunk, 1.0)
                 for chunk in scoped_chunks
@@ -133,8 +146,13 @@ class RagService:
             candidates = [(hit.chunk, hit.score) for hit in hybrid_hits]
 
         yield self._sse("status", {"request_id": request_id, "stage": "rerank", "candidate_count": len(candidates)})
-        rerank_hits = self.reranker.rerank(rewritten_query, candidates, top_n=self._adaptive_top_n(question, rewritten_query))
-        rerank_hits = self._ensure_exact_evidence_coverage(question, rewritten_query, rerank_hits, scoped_chunks)
+        if not document_overview:
+            rerank_hits = self.reranker.rerank(
+                rewritten_query,
+                candidates,
+                top_n=self._adaptive_top_n(question, rewritten_query),
+            )
+            rerank_hits = self._ensure_exact_evidence_coverage(question, rewritten_query, rerank_hits, scoped_chunks)
 
         if direct_image_caption and self._has_uninformative_image_caption(rerank_hits):
             answer = (
@@ -154,6 +172,7 @@ class RagService:
 
         if (
             not direct_image_caption
+            and not document_overview
             and (
                 (
                     should_refuse(rerank_hits)
@@ -212,27 +231,21 @@ class RagService:
 
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-    def _is_image_overview_question(self, question: str) -> bool:
-        image_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
-        has_image_file = (
-            len(self.active_documents) == 1
-            and any(self.active_documents[0].lower().endswith(suffix) for suffix in image_suffixes)
-        )
-        has_image_caption = any(
-            chunk.chunk_type == "image_caption" or "<summary>natural_image</summary>" in chunk.content
-            for chunk in self.chunks
-        )
-        if not (has_image_file or has_image_caption):
+    def _is_image_overview_question(self, question: str, scoped_chunks: list[ChunkRecord]) -> bool:
+        """Route to direct image evidence only for actual image-focused questions.
+
+        A PDF may contain a logo or portrait alongside many text chunks. Generic
+        document questions such as "主要内容是什么" must still search the text
+        instead of being captured by the single image block.
+        """
+
+        image_chunks = [chunk for chunk in scoped_chunks if self._is_image_chunk(chunk)]
+        if not image_chunks:
             return False
+
+        only_image_evidence = bool(scoped_chunks) and len(image_chunks) == len(scoped_chunks)
         lowered_question = question.casefold()
-        if has_image_file and any(suffix in lowered_question for suffix in image_suffixes):
-            return True
-        if has_image_caption and any(
-            phrase in lowered_question
-            for phrase in ("什么意思", "啥意思", "是什么", "解释一下", "内容", "描述", "caption", "image")
-        ):
-            return True
-        overview_phrases = (
+        explicit_image_phrases = (
             "描述了什么",
             "图中有什么",
             "图片中有什么",
@@ -243,8 +256,50 @@ class RagService:
             "画面是什么",
             "图片内容",
             "这是什么图",
+            "解释这张图",
+            "解释图片",
+            "caption",
+            "image",
         )
-        return any(phrase in question for phrase in overview_phrases)
+        return only_image_evidence or any(phrase in lowered_question for phrase in explicit_image_phrases)
+
+    @staticmethod
+    def _is_image_chunk(chunk: ChunkRecord) -> bool:
+        return chunk.chunk_type == "image_caption" or "<summary>natural_image</summary>" in chunk.content
+
+    @staticmethod
+    def _is_document_overview_question(question: str) -> bool:
+        return any(
+            phrase in question
+            for phrase in (
+                "主要内容",
+                "内容是什么",
+                "讲了什么",
+                "总结一下",
+                "概括一下",
+                "概述一下",
+                "介绍一下这篇",
+                "介绍一下这份",
+            )
+        )
+
+    def _document_overview_hits(self, scoped_chunks: list[ChunkRecord], limit: int = 12) -> list[RerankHit]:
+        """Select representative text evidence across a named document."""
+
+        text_chunks = [
+            chunk
+            for chunk in scoped_chunks
+            if not self._is_image_chunk(chunk) and len(chunk.content.strip()) >= 12
+        ]
+        if len(text_chunks) <= limit:
+            selected = text_chunks
+        else:
+            indexes = {
+                round(index * (len(text_chunks) - 1) / (limit - 1))
+                for index in range(limit)
+            }
+            selected = [text_chunks[index] for index in sorted(indexes)]
+        return [RerankHit(chunk=chunk, score=1.0, hybrid_score=1.0) for chunk in selected]
 
     def _scope_chunks(self, question: str) -> tuple[list[ChunkRecord], list[str]]:
         """Limit retrieval to files explicitly referenced in the user's question."""

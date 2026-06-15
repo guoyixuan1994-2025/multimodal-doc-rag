@@ -15,10 +15,9 @@ jobs:
           python-version: "3.11"
 
       - name: Check Python syntax
-        run: python -m compileall -q app run_dev.py run_eval.py streamlit_app.py
+        run: python -m compileall -q app tests run_dev.py run_eval.py streamlit_app.py
 
       - name: Validate Docker Compose
         run: |
           cp .env.docker.example .env.docker
           docker compose config -q
-

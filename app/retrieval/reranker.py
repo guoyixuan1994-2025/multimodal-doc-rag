@@ -38,20 +38,27 @@ class Reranker:
             return sorted(hits, key=lambda hit: hit.score, reverse=True)[:top_n]
 
         tokenizer, model = model_pair
-        import torch
+        try:
+            import torch
 
-        pairs = [(query, chunk.content) for chunk, _ in candidates]
-        inputs = tokenizer(
-            pairs,
-            padding=True,
-            truncation=True,
-            return_tensors="pt",
-            max_length=512,
-        )
-        with torch.no_grad():
-            outputs = model(**inputs)
-        raw_scores = outputs.logits.squeeze(-1).tolist()
-        scores = raw_scores if isinstance(raw_scores, list) else [float(raw_scores)]
+            pairs = [(query, chunk.content) for chunk, _ in candidates]
+            inputs = tokenizer(
+                pairs,
+                padding=True,
+                truncation=True,
+                return_tensors="pt",
+                max_length=512,
+            )
+            with torch.no_grad():
+                outputs = model(**inputs)
+            raw_scores = outputs.logits.squeeze(-1).tolist()
+            scores = raw_scores if isinstance(raw_scores, list) else [float(raw_scores)]
+        except Exception:
+            # Some torch/transformers combinations can fail during inference
+            # after loading successfully. Keep the RAG request available by
+            # falling back to the already-computed hybrid retrieval scores.
+            self._model = None
+            return self._fallback_hits(candidates, top_n)
 
         hits = []
         for (chunk, hybrid_score), rerank_score in zip(candidates, scores):
@@ -62,6 +69,14 @@ class Reranker:
                     hybrid_score=hybrid_score,
                 )
             )
+        return sorted(hits, key=lambda hit: hit.score, reverse=True)[:top_n]
+
+    @staticmethod
+    def _fallback_hits(candidates: list[tuple[ChunkRecord, float]], top_n: int) -> list[RerankHit]:
+        hits = [
+            RerankHit(chunk=chunk, score=hybrid_score, hybrid_score=hybrid_score)
+            for chunk, hybrid_score in candidates
+        ]
         return sorted(hits, key=lambda hit: hit.score, reverse=True)[:top_n]
 
     def _load_model(self):
