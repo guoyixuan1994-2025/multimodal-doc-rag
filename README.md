@@ -95,7 +95,6 @@ python -m streamlit run streamlit_app.py
 4. 提问资料中不存在的问题，展示拒答能力。
 5. 运行评估，展示检索指标和 RAGAS 图表。
 
-完整话术见 [3 分钟面试演示脚本](docs/demo-script.md)。
 
 ## 核心 API
 
