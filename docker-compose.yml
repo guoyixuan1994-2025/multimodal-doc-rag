@@ -1,0 +1,51 @@
+services:
+  rag-api:
+    build: .
+    image: multimodal-doc-rag:latest
+    container_name: rag-api
+    env_file:
+      - .env.docker
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./sample_docs:/app/sample_docs:ro
+      - rag_outputs:/data/rag_outputs
+      - rag_fastembed_cache:/cache/fastembed
+      - rag_huggingface_cache:/cache/huggingface
+      - rag_modelscope_cache:/cache/modelscope
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8090"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 5m
+
+  rag-ui:
+    image: multimodal-doc-rag:latest
+    container_name: rag-ui
+    depends_on:
+      rag-api:
+        condition: service_healthy
+    env_file:
+      - .env.docker
+    environment:
+      API_BASE_URL: http://rag-api:8090
+    ports:
+      - "8501:8501"
+    volumes:
+      - rag_outputs:/data/rag_outputs
+    command:
+      [
+        "streamlit",
+        "run",
+        "streamlit_app.py",
+        "--server.address=0.0.0.0",
+        "--server.port=8501"
+      ]
+
+volumes:
+  rag_outputs:
+  rag_fastembed_cache:
+  rag_huggingface_cache:
+  rag_modelscope_cache:

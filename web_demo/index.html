@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>政企文档智能问答 Demo</title>
+  <style>
+    body { margin: 0; font-family: Arial, "Microsoft YaHei", sans-serif; background: #f6f7f9; color: #1f2937; }
+    header { background: #0f172a; color: white; padding: 18px 28px; }
+    main { max-width: 1060px; margin: 24px auto; padding: 0 20px; display: grid; gap: 16px; }
+    section { background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 18px; }
+    h1 { font-size: 22px; margin: 0; }
+    h2 { font-size: 17px; margin: 0 0 12px; }
+    textarea, input { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; }
+    button { border: 0; border-radius: 6px; background: #2563eb; color: white; padding: 10px 14px; cursor: pointer; }
+    button.secondary { background: #475569; }
+    pre { white-space: pre-wrap; background: #0f172a; color: #d1fae5; padding: 14px; border-radius: 6px; overflow: auto; }
+    .row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: start; }
+    .sources { display: grid; gap: 8px; margin-top: 12px; }
+    .source { border-left: 4px solid #2563eb; background: #f8fafc; padding: 10px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>政企多模态文档解析智能 RAG 检索问答系统</h1>
+  </header>
+  <main>
+    <section>
+      <h2>1. 知识库配置</h2>
+      <p><input id="collectionName" type="text" placeholder="collection 名称（留空使用默认业务库）" /></p>
+      <p><input id="apiKey" type="password" placeholder="X-API-Key（未启用鉴权可留空）" /></p>
+    </section>
+
+    <section>
+      <h2>2. 初始化样例知识库</h2>
+      <button onclick="ingestSample()">解析并入库样例文档</button>
+      <pre id="ingestResult">等待操作...</pre>
+    </section>
+
+    <section>
+      <h2>3. 文档上传并增量更新</h2>
+      <div class="row">
+        <input id="fileInput" type="file" />
+        <button class="secondary" onclick="uploadFile()">上传</button>
+      </div>
+      <pre id="uploadResult">上传后会返回 file_path，再用 /documents/ingest-path 解析。</pre>
+    </section>
+
+    <section>
+      <h2>4. 批量目录初始化 / 增量更新</h2>
+      <p><input id="directoryPath" type="text" placeholder="服务器上的文档目录路径" /></p>
+      <p><label><input id="directoryReset" type="checkbox" style="width: auto;" /> 导入前清空当前 collection</label></p>
+      <button onclick="ingestDirectory()">批量导入目录</button>
+      <pre id="directoryResult">默认增量入库；同名文件会覆盖旧版本。</pre>
+    </section>
+
+    <section>
+      <h2>5. 当前知识库全库问答</h2>
+      <textarea id="question" rows="3">为什么要用 BM25 和向量混合检索？</textarea>
+      <p><button onclick="chat()">提问</button></p>
+      <pre id="answer">等待提问...</pre>
+      <div id="sources" class="sources"></div>
+    </section>
+  </main>
+
+  <script>
+    function collectionParam() {
+      const name = document.getElementById('collectionName').value.trim();
+      return name ? `&collection_name=${encodeURIComponent(name)}` : '';
+    }
+
+    function requestHeaders(json = false) {
+      const headers = {};
+      const apiKey = document.getElementById('apiKey').value.trim();
+      if (apiKey) headers['X-API-Key'] = apiKey;
+      if (json) headers['Content-Type'] = 'application/json';
+      return headers;
+    }
+
+    async function ingestSample() {
+      const res = await fetch(`/documents/ingest-sample?reset=false${collectionParam()}`, {
+        method: 'POST',
+        headers: requestHeaders()
+      });
+      document.getElementById('ingestResult').textContent = JSON.stringify(await res.json(), null, 2);
+    }
+
+    async function uploadFile() {
+      const input = document.getElementById('fileInput');
+      if (!input.files.length) return;
+      const form = new FormData();
+      form.append('file', input.files[0]);
+      const res = await fetch('/documents/upload', { method: 'POST', headers: requestHeaders(), body: form });
+      const uploadData = await res.json();
+      if (!res.ok) {
+        document.getElementById('uploadResult').textContent = JSON.stringify(uploadData, null, 2);
+        return;
+      }
+      document.getElementById('uploadResult').textContent = '文件已上传，正在解析并入库...';
+      const ingestRes = await fetch(`/documents/ingest-path?file_path=${encodeURIComponent(uploadData.file_path)}${collectionParam()}`, {
+        method: 'POST',
+        headers: requestHeaders()
+      });
+      const ingestData = await ingestRes.json();
+      document.getElementById('uploadResult').textContent = JSON.stringify({
+        upload: uploadData,
+        ingest: ingestData
+      }, null, 2);
+    }
+
+    async function ingestDirectory() {
+      const directory = document.getElementById('directoryPath').value.trim();
+      if (!directory) return;
+      const reset = document.getElementById('directoryReset').checked;
+      const url = `/documents/ingest-directory?directory_path=${encodeURIComponent(directory)}&recursive=true&reset=${reset}${collectionParam()}`;
+      const res = await fetch(url, { method: 'POST', headers: requestHeaders() });
+      document.getElementById('directoryResult').textContent = JSON.stringify(await res.json(), null, 2);
+    }
+
+    async function chat() {
+      const question = document.getElementById('question').value;
+      const res = await fetch('/chat', {
+        method: 'POST',
+        headers: requestHeaders(true),
+        body: JSON.stringify({
+          question,
+          collection_name: document.getElementById('collectionName').value.trim() || null
+        })
+      });
+      const data = await res.json();
+      document.getElementById('answer').textContent = JSON.stringify({
+        request_id: data.request_id,
+        rewritten_query: data.rewritten_query,
+        grounded: data.grounded,
+        answer: data.answer
+      }, null, 2);
+
+      const box = document.getElementById('sources');
+      box.innerHTML = '';
+      for (const source of data.sources || []) {
+        const div = document.createElement('div');
+        div.className = 'source';
+        div.textContent = `${source.chunk_id} | ${source.file_name || ''} | score=${source.score?.toFixed?.(3)} | ${source.text.slice(0, 160)}`;
+        box.appendChild(div);
+      }
+    }
+  </script>
+</body>
+</html>

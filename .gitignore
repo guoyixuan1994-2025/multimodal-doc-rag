@@ -1,0 +1,30 @@
+# Secrets
+.env
+.env.*
+!.env.example
+!.env.docker.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Runtime data and model caches
+data/
+outputs/
+parsed/
+raw_docs/
+chroma_store/
+.cache/
+
+# Logs and local tooling
+*.log
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
