@@ -193,6 +193,26 @@ class RagService:
             })
             return
 
+        if document_overview:
+            # Some OpenAI-compatible providers produce a refusal only in
+            # token-streaming mode for long multi-chunk summaries, while the
+            # same prompt succeeds through invoke(). Generate the summary via
+            # the stable path, then deliver the completed answer as an SSE
+            # event so Streamlit and POST /chat stay behaviorally consistent.
+            answer = self._generate_answer(question, rewritten_query, rerank_hits)
+            grounded = "资料中没有相关信息" not in answer
+            sources = [self._to_source(hit).model_dump() for hit in rerank_hits] if grounded else []
+            yield self._sse("token", {"request_id": request_id, "text": answer})
+            yield self._sse("done", {
+                "request_id": request_id,
+                "question": question,
+                "rewritten_query": rewritten_query,
+                "answer": answer if grounded else "资料中没有相关信息。",
+                "grounded": grounded,
+                "sources": sources,
+            })
+            return
+
         answer_parts: list[str] = []
         llm = create_chat_llm()
         prompt = build_rag_prompt(question, rewritten_query, rerank_hits)
