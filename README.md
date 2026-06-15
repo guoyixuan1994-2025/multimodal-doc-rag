@@ -55,12 +55,30 @@ flowchart LR
 
 ### Docker Compose
 
-首次运行会下载 MinerU、embedding 和 reranker 模型，请预留足够磁盘空间和启动时间。
+准备条件：
+
+- Docker Desktop 已启动
+- Docker 可用内存建议不少于 `8 GB`
+- 建议至少预留 `20 GB` 磁盘空间
+- 可用的 DeepSeek API Key
+
+首次部署会构建完整 MinerU 镜像，并下载 embedding 与 reranker 模型。根据网络速度，首次构建通常需要
+`20-30` 分钟，首次问答还可能需要 `3-8` 分钟进行模型下载和预热；后续启动和问答会复用 Docker 镜像与模型卷。
 
 ```bash
 cp .env.docker.example .env.docker
 # 编辑 .env.docker，填入 LLM_API_KEY，并替换 APP_API_KEY
-docker compose up --build
+docker compose up --build -d
+docker compose ps
+```
+
+Windows PowerShell：
+
+```powershell
+Copy-Item .env.docker.example .env.docker
+# 编辑 .env.docker，填入 LLM_API_KEY，并替换 APP_API_KEY
+docker compose up --build -d
+docker compose ps
 ```
 
 启动后访问：
@@ -68,6 +86,31 @@ docker compose up --build
 - Streamlit 控制台：<http://localhost:8501>
 - FastAPI Web Demo：<http://localhost:8090/web>
 - OpenAPI 文档：<http://localhost:8090/docs>
+
+首次启动建议观察 API 日志，等待模型下载与健康检查完成：
+
+```bash
+docker compose logs -f rag-api
+```
+
+当 `docker compose ps` 中 `rag-api` 显示 `healthy` 后，打开 Streamlit 控制台，填写 `.env.docker`
+中的 `APP_API_KEY`，初始化样例知识库并开始提问。页面中不要填写 `LLM_API_KEY`。
+
+常用运维命令：
+
+```bash
+docker compose stop          # 停止服务，保留模型和知识库数据
+docker compose start         # 复用缓存快速启动
+docker compose down          # 删除容器，保留具名数据卷
+docker compose down -v       # 同时删除模型缓存和知识库数据
+```
+
+如果首次构建提示无法访问 `auth.docker.io`，通常是 Docker Hub 临时网络问题，可以先执行：
+
+```bash
+docker pull python:3.11-slim
+docker compose up --build -d
+```
 
 ### 本地 Python
 
@@ -163,4 +206,3 @@ streamlit_app.py # 面试演示控制台
 ## License
 
 MIT
-
