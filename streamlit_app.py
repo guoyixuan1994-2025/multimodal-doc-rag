@@ -40,6 +40,8 @@ def api_headers() -> dict[str, str]:
     api_key = st.session_state.get("api_key", "").strip()
     if not api_key:
         return {}
+    if api_key.lower().startswith("sk-"):
+        raise RuntimeError("请填写服务端 APP_API_KEY，不要在页面中填写或展示 LLM_API_KEY。")
     return {"X-API-Key": api_key}
 
 
@@ -303,7 +305,14 @@ def main() -> None:
     with st.sidebar:
         st.header("服务配置")
         st.text_input("FastAPI 地址", value=DEFAULT_API_BASE, key="api_base")
-        st.text_input("API Key（未启用可留空）", type="password", key="api_key")
+        st.text_input(
+            "服务 API Key（仅填写 APP_API_KEY）",
+            type="password",
+            key="api_key",
+            help="用于访问本项目 FastAPI。禁止填写 DeepSeek/OpenAI 等 LLM_API_KEY。",
+        )
+        if st.session_state.api_key.strip().lower().startswith("sk-"):
+            st.error("检测到疑似 LLM_API_KEY，请立即清空。这里只能填写 APP_API_KEY。")
         st.selectbox(
             "解析模式",
             options=["auto", "text", "ocr", "full"],
